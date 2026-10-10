@@ -83,3 +83,13 @@ a.btn-link { display:inline-flex; align-items:center; border:1px solid var(--lin
 .pager button { padding:6px 11px; font-size:13px; min-width:36px; }
 .pager-group { display:inline-flex; align-items:center; gap:4px; }
 @media (max-width:560px) { .history-list .num { display:none; } .history-list li { flex-wrap:wrap; } }
+.view-tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+.view-tabs button { background:transparent; border:1px solid var(--line); color:var(--muted); padding:6px 12px; font-size:13px; font-weight:500; }
+.view-tabs button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.out.translated { border-color:#4a3a66; }
+.translate-bar { display:flex; gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); }
+.translate-bar select { flex:1; }
+.translate-bar button { white-space:nowrap; }
+.muted { color:var(--muted); font-size:12px; }
+.directions-toggle { margin:14px 0 6px; color:var(--text); font-size:14px; }
+.sound-btn { background:transparent; border:1px solid var(--line); padding:6px 10px; font-size:15px; }

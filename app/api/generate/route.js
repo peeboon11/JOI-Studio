@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { usageCost } from "@/lib/pricing";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // Vercel Hobby max; 30-60 min scripts may need Pro (raise to 800)
@@ -15,17 +16,31 @@ Put the script (plus the optional note) in "script". Also fill in:
 - "title": a catchy English clip title; "alt_titles": 3 more options.
 - "genres": the main genres/themes of this clip.
 - "tags": 10-20 short search tags suitable for adult video sites (lowercase).
-- "sound_effects": background music / SFX that would fit, each with when to use it in the script and English search keywords to find it in a sound library.`;
+- "sound_effects": background music / SFX that would fit, each with when to use it in the script and English search keywords to find it in a sound library.
+- "equipment": ONLY what the viewer should prepare before starting (never items for the character) — e.g. lube (water-based / silicone; water-based with silicone toys), masturbator/stroker, two-hole stroker, towel/tissues, cleaning wipes, headphones — each with why it's needed and when it is used in the script. Also add a short [PREP: ...] line at the very start of the script listing what to have ready, and mention the items again at the moment they're used (e.g. "[ACTION: add more lube]").`;
 
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "alt_titles", "genres", "tags", "sound_effects", "script"],
+  required: ["title", "alt_titles", "genres", "tags", "sound_effects", "equipment", "script"],
   properties: {
     title: { type: "string" },
     alt_titles: { type: "array", items: { type: "string" } },
     genres: { type: "array", items: { type: "string" } },
     tags: { type: "array", items: { type: "string" } },
+    equipment: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["item", "why", "when"],
+        properties: {
+          item: { type: "string" },
+          why: { type: "string" },
+          when: { type: "string" },
+        },
+      },
+    },
     sound_effects: {
       type: "array",
       items: {
@@ -43,17 +58,10 @@ const SCHEMA = {
   },
 };
 
-// USD per 1M tokens [input, output]; fallbacks may answer with another model
-const PRICES = {
-  "claude-opus-5-5": [4, 20],
-  "claude-opus-5": [5, 25],
-  "claude-opus-4-8": [5, 25],
-  "claude-sonnet-5-5": [2, 10],
-  "claude-fable-5-1": [10, 50],
-};
 
 export async function POST(req) {
-  const { text, styles, games, tone, persona, intensity, length, targetWords, extra } = await req.json();
+  const { text, styles, games, directions, acts, tone, persona, intensity, length, targetWords, extra } =
+    await req.json();
   if (!process.env.ANTHROPIC_API_KEY) {
     return Response.json(
       { error: "ยังไม่ได้ตั้ง ANTHROPIC_API_KEY ในไฟล์ .env.local (แก้แล้วต้องรีสตาร์ท npm run dev)" },
@@ -74,7 +82,14 @@ Settings:
 - Speaker persona: ${persona || "default"}
 - Intensity (1-5): ${intensity || 3}
 - Target length: ${length || "medium (~2-3 minutes spoken)"}${targetWords ? ` — the script MUST be about ${targetWords} words. For long scripts, structure it in clearly labelled sections/phases with a build-up, multiple rounds and a finale; do not stop early or summarize.` : ""}
-- Extra instructions: ${extra || "none"}`;
+- Extra instructions: ${extra || "none"}${
+    directions
+      ? `
+
+Scene narration: ON. The character is roleplaying a sex scene with the viewer ("you"). Besides the spoken lines, add explicit [ACTION: ...] narration lines describing the sex that happens in the story between the character and the viewer — e.g. kissing, undressing, handjob, blowjob, when the viewer's cock goes into her pussy or ass and when it pulls out, speed/depth, position changes and how it finishes — plus what the viewer physically does with their own hand/toy at that moment to match it. Place each ACTION right where it happens in the timeline. Keep spoken lines and ACTION lines clearly separate. The character does not use any toys or equipment; equipment is only for the viewer.
+- Actions to feature: ${acts?.length ? acts.join("; ") : "choose what fits the styles"}`
+      : ""
+  }`;
 
   // Stream NDJSON lines to the browser: {type:"progress"|"done"|"error", ...}
   const enc = new TextEncoder();
@@ -111,10 +126,7 @@ Settings:
           send({ type: "error", error: "บทยาวเกินขีดจำกัด ลองลดความยาวลง" });
         } else {
           const raw = msg.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-          const [pin, pout] = PRICES[msg.model] ?? PRICES["claude-opus-5-5"];
-          const { input_tokens, output_tokens } = msg.usage;
-          const cost = (input_tokens * pin + output_tokens * pout) / 1e6;
-          send({ type: "done", result: JSON.parse(raw), usage: { model: msg.model, input_tokens, output_tokens, cost } });
+          send({ type: "done", result: JSON.parse(raw), usage: usageCost(msg) });
         }
       } catch (err) {
         console.error(err);

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { LENGTHS, historyApi as api } from "@/lib/shared";
+import { LENGTHS, historyApi as api, playChime, notify } from "@/lib/shared";
 
 const STYLES = [
   "Girlfriend experience (GFE)", "Femdom / dominant", "Gentle & sensual", "Teasing / denial",
@@ -20,6 +20,7 @@ const GAMES = [
   { label: "Ruined orgasm", value: "Ruined orgasm ending" },
   { label: "นับรอบ (Strokes count)", value: "Exact stroke counts (e.g. 'give me 20 strokes')" },
 ];
+const TRANSLATE_LANGS = ["ไทย (Thai)", "日本語 (Japanese)", "中文 (Chinese)", "한국어 (Korean)", "Español (Spanish)", "Tiếng Việt (Vietnamese)", "Bahasa Indonesia"];
 const SFX_SITES = [
   { name: "Freesound", url: "https://freesound.org", note: "ฟรี ต้องเช็ค license แต่ละไฟล์ (CC0 ใช้ได้เลย)" },
   { name: "Pixabay Sound Effects", url: "https://pixabay.com/sound-effects/", note: "ฟรี ใช้เชิงพาณิชย์ได้" },
@@ -28,6 +29,17 @@ const SFX_SITES = [
   { name: "Zapsplat", url: "https://www.zapsplat.com", note: "ฟรี (ต้องให้เครดิต) / แบบจ่ายไม่ต้อง" },
   { name: "YouTube Audio Library", url: "https://studio.youtube.com", note: "ฟรี เพลง+SFX" },
   { name: "Epidemic Sound", url: "https://www.epidemicsound.com", note: "เสียเงิน คุณภาพสูง" },
+];
+// performer actions to describe in [ACTION: ...] directions
+const ACTS = [
+  { label: "จูบ / เล้าโลม", value: "kissing and foreplay" },
+  { label: "ถอดเสื้อผ้า", value: "undressing" },
+  { label: "ใช้มือ (Handjob)", value: "handjob" },
+  { label: "ใช้ปาก (Blowjob)", value: "blowjob / oral" },
+  { label: "เสียบหี (Vaginal)", value: "vaginal sex" },
+  { label: "เสียบตูด (Anal)", value: "anal sex" },
+  { label: "เปลี่ยนท่า", value: "position changes (missionary, cowgirl, doggy, etc.)" },
+  { label: "แตกที่ไหน", value: "where/how the finish happens" },
 ];
 const TONES = ["Seductive", "Sweet & caring", "Bossy / strict", "Playful", "Mysterious", "Encouraging"];
 // words ≈ spoken minutes × ~120 wpm (JOI has pauses and countdowns)
@@ -39,7 +51,7 @@ const expectedChars = (words) => words * 6 + 1500;
 const estimateSeconds = (words) => Math.round(20 + (words * 1.4 + 500) / 70);
 const fmtTime = (s) => (s >= 60 ? `${Math.floor(s / 60)} นาที ${Math.round(s % 60)} วิ` : `${Math.max(0, Math.round(s))} วิ`);
 
-const EMPTY = { text: "", styles: [], games: [], tone: TONES[0], persona: "", intensity: 3, length: LENGTHS[1].value, extra: "" };
+const EMPTY = { text: "", styles: [], games: [], directions: false, acts: [], tone: TONES[0], persona: "", intensity: 3, length: LENGTHS[1].value, extra: "" };
 
 function loadCredit() {
   try {
@@ -96,6 +108,12 @@ export default function Home() {
   const [cloudErr, setCloudErr] = useState("");
   const [savedOut, setSavedOut] = useState(""); // last script text known to be in the cloud
 
+  // ---- translations of the English script: { [lang]: text } ----
+  const [translations, setTranslations] = useState({});
+  const [view, setView] = useState("en"); // "en" or a language name from TRANSLATE_LANGS
+  const [tLang, setTLang] = useState(TRANSLATE_LANGS[0]);
+  const [translating, setTranslating] = useState(false);
+
   useEffect(() => {
     const d = loadJSON("draft", null);
     if (d) {
@@ -104,6 +122,7 @@ export default function Home() {
       setSavedOut(d.out ?? "");
       setMeta(d.meta ?? null);
       setCurrentId(d.currentId ?? null);
+      setTranslations(d.translations ?? {});
     }
     setLoaded(true);
 
@@ -129,9 +148,9 @@ export default function Home() {
 
   useEffect(() => {
     if (!loaded) return;
-    const ok = saveJSON("draft", { form, out, meta, currentId });
+    const ok = saveJSON("draft", { form, out, meta, currentId, translations });
     setStorageWarn(ok ? "" : "บันทึกร่างในเครื่องไม่สำเร็จ (พื้นที่เต็ม)");
-  }, [form, out, meta, currentId, loaded]);
+  }, [form, out, meta, currentId, translations, loaded]);
 
   // push edits to the script up to its cloud entry, debounced
   useEffect(() => {
@@ -182,12 +201,81 @@ export default function Home() {
       setSavedOut(entry.out);
       setMeta(entry.meta);
       setCurrentId(entry.id);
+      setTranslations(entry.translations ?? {});
+      setView("en");
       setErr("");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) {
       setCloudErr(e.message);
     }
   }
+  async function translate() {
+    const lang = tLang;
+    setTranslating(true);
+    setErr("");
+    setView(lang);
+    setTranslations((t) => ({ ...t, [lang]: "" }));
+    let text = "";
+    try {
+      const r = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: out, lang }),
+      });
+      if (r.status === 401) return (window.location.href = "/login");
+      if (!r.ok) throw new Error((await r.json()).error);
+
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const ev = JSON.parse(line);
+          if (ev.type === "delta") {
+            text += ev.text;
+            setTranslations((t) => ({ ...t, [lang]: text }));
+          } else if (ev.type === "error") throw new Error(ev.error);
+          else if (ev.type === "done") {
+            setLastUsage(ev.usage);
+            addSpend(ev.usage.cost);
+            if (currentId) {
+              api("PATCH", { id: currentId, translation: { lang, text } }).catch((e) =>
+                setCloudErr("บันทึกคำแปลขึ้นคลาวด์ไม่สำเร็จ: " + e.message)
+              );
+            }
+            alertDone(true, "แปลเสร็จแล้ว 🌐", lang);
+          }
+        }
+      }
+    } catch (e) {
+      setErr("แปลไม่สำเร็จ: " + e.message);
+      alertDone(false, "แปลไม่สำเร็จ", e.message);
+      if (!text) {
+        setTranslations((t) => { const n = { ...t }; delete n[lang]; return n; });
+        setView("en");
+      }
+    } finally {
+      setTranslating(false);
+    }
+  }
+
+  // start a fresh script but keep the current settings; the old one stays in history
+  function newScript() {
+    setOut("");
+    setSavedOut("");
+    setMeta(null);
+    setCurrentId(null);
+    setTranslations({});
+    setView("en");
+    setErr("");
+  }
+
   async function logout() {
     await fetch("/api/login", { method: "DELETE" });
     window.location.href = "/login";
@@ -199,6 +287,30 @@ export default function Home() {
     const id = setInterval(() => setProgress((p) => p && { ...p, now: Date.now() }), 500);
     return () => clearInterval(id);
   }, [loading]);
+
+  // ---- finish alerts: chime + background-tab notification + tab title ----
+  const [sound, setSound] = useState(true);
+  useEffect(() => setSound(loadJSON("sound", true)), []);
+  function toggleSound() {
+    const next = !sound;
+    setSound(next);
+    saveJSON("sound", next);
+    if (next) {
+      playChime(true); // preview, and unlocks audio on browsers that need a user gesture
+      if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission();
+    }
+  }
+  function alertDone(ok, title, body) {
+    if (!sound) return;
+    playChime(ok);
+    notify(title, body);
+    if (document.visibilityState !== "visible") {
+      const orig = "JOI Script Studio";
+      document.title = (ok ? "✅ " : "⚠️ ") + title;
+      const back = () => { document.title = orig; document.removeEventListener("visibilitychange", back); };
+      document.addEventListener("visibilitychange", back);
+    }
+  }
 
   function addSpend(cost) {
     setCredit((c) => {
@@ -238,14 +350,18 @@ export default function Home() {
           else if (ev.type === "done") {
             setOut(ev.result.script);
             setMeta(ev.result);
+            setTranslations({});
+            setView("en");
             setLastUsage(ev.usage);
             addSpend(ev.usage.cost);
             addHistory(ev.result, form, ev.usage);
+            alertDone(true, "สร้างบทเสร็จแล้ว ✨", ev.result.title);
           }
         }
       }
     } catch (e) {
       setErr(e.message);
+      alertDone(false, "สร้างบทไม่สำเร็จ", e.message);
     } finally {
       setLoading(false);
       setProgress(null);
@@ -270,10 +386,11 @@ export default function Home() {
   }
   const selectedLen = LENGTHS.find((l) => l.value === form.length) ?? LENGTHS[1];
 
+  const shown = view === "en" ? out : translations[view] ?? "";
   function download() {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([out], { type: "text/plain" }));
-    a.download = "joi-script.txt";
+    a.href = URL.createObjectURL(new Blob([shown], { type: "text/plain" }));
+    a.download = view === "en" ? "joi-script.txt" : `joi-script-${view}.txt`;
     a.click();
   }
 
@@ -284,6 +401,10 @@ export default function Home() {
         <nav>
           <Link href="/" className="active">✍️ สร้างบท</Link>
           <Link href="/history">📚 ประวัติ</Link>
+          <button type="button" className="sound-btn" onClick={toggleSound}
+            title={sound ? "ปิดเสียงแจ้งเตือน" : "เปิดเสียงแจ้งเตือน"}>
+            {sound ? "🔔" : "🔕"}
+          </button>
         </nav>
       </div>
       <p className="sub">พิมพ์ไอเดียหรือบทร่างภาษาอะไรก็ได้ → ได้บทภาษาอังกฤษตามแนวที่เลือก (สำหรับผู้ใหญ่ 18+)</p>
@@ -321,6 +442,24 @@ export default function Home() {
           </div>
           <label>ความเข้มข้น: {form.intensity}/5</label>
           <input type="range" min={1} max={5} value={form.intensity} onChange={set("intensity")} />
+          <label className="check directions-toggle">
+            <input type="checkbox" checked={form.directions}
+              onChange={(e) => setForm((f) => ({ ...f, directions: e.target.checked }))} />
+            🎬 ใส่คำบรรยายฉากเซ็กส์ในเรื่อง (ตัวละครทำอะไรกับผู้ชม เอาเข้า/ออกตอนไหน)
+          </label>
+          {form.directions && (
+            <>
+              <small className="muted">เลือกสิ่งที่จะให้บรรยาย (ไม่เลือก = ให้ AI เลือกตามแนว)</small>
+              <div className="tags">
+                {ACTS.map((a) => (
+                  <button key={a.value} type="button" className={"tag" + (form.acts.includes(a.value) ? " on" : "")}
+                    onClick={() => toggle(a.value, "acts")}>
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <label>เกม / คำสั่งพิเศษ (เลือกได้หลายอัน)</label>
           <div className="tags">
             {GAMES.map((g) => (
@@ -333,10 +472,13 @@ export default function Home() {
           <label>คำสั่งเพิ่มเติม</label>
           <input value={form.extra} onChange={set("extra")} placeholder="เช่น ทำ 3 รอบก่อนจบ, เรียกว่า 'good boy'" />
           <div className="actions">
-            <button onClick={generate} disabled={loading || !form.text.trim()}>
-              {loading ? "กำลังเขียนบท..." : "✨ สร้างบท"}
+            <button onClick={generate} disabled={loading || translating || !form.text.trim()}>
+              {loading ? "กำลังเขียนบท..." : out ? "🔄 สร้างบทใหม่ (ตั้งค่าเดิม)" : "✨ สร้างบท"}
             </button>
-            <button className="ghost" onClick={() => { setForm(EMPTY); setCustom(""); setOut(""); setMeta(null); setCurrentId(null); setErr(""); }}>ล้าง</button>
+            <button className="ghost" disabled={loading} title="เริ่มบทใหม่ เก็บการตั้งค่าไว้ (บทเดิมยังอยู่ในประวัติ)"
+              onClick={newScript}>＋ บทใหม่</button>
+            <button className="ghost" disabled={loading} title="ล้างทุกช่องรวมการตั้งค่า"
+              onClick={() => { newScript(); setForm(EMPTY); setCustom(""); }}>ล้างทั้งหมด</button>
           </div>
           {!loading && (
             <div className="hint">
@@ -360,12 +502,36 @@ export default function Home() {
           {err && <div className="err">{err}</div>}
         </div>
         <div className="card">
-          <label>บทภาษาอังกฤษ (แก้ไขได้)</label>
-          <textarea className="out" value={out} onChange={(e) => setOut(e.target.value)} placeholder="ผลลัพธ์จะแสดงที่นี่" />
-          <div className="actions">
-            <button className="ghost" onClick={() => navigator.clipboard.writeText(out)} disabled={!out}>📋 คัดลอก</button>
-            <button className="ghost" onClick={download} disabled={!out}>⬇ ดาวน์โหลด .txt</button>
+          <div className="view-tabs">
+            <button className={view === "en" ? "on" : ""} onClick={() => setView("en")}>English (แก้ไขได้)</button>
+            {Object.keys(translations).map((l) => (
+              <button key={l} className={view === l ? "on" : ""} onClick={() => setView(l)}>
+                🌐 {l}{translating && tLang === l ? " …" : ""}
+              </button>
+            ))}
           </div>
+          {view === "en" ? (
+            <textarea className="out" value={out} onChange={(e) => setOut(e.target.value)} placeholder="ผลลัพธ์จะแสดงที่นี่" />
+          ) : (
+            <textarea className="out translated" value={translations[view] ?? ""} readOnly
+              placeholder="กำลังแปล..." />
+          )}
+          <div className="actions">
+            <button className="ghost" disabled={!shown}
+              onClick={() => navigator.clipboard.writeText(shown)}>📋 คัดลอก</button>
+            <button className="ghost" onClick={download} disabled={!shown}>⬇ ดาวน์โหลด .txt</button>
+          </div>
+          <div className="translate-bar">
+            <select value={tLang} onChange={(e) => setTLang(e.target.value)} disabled={translating}>
+              {TRANSLATE_LANGS.map((l) => <option key={l}>{l}</option>)}
+            </select>
+            <button onClick={translate} disabled={!out || translating || loading}>
+              {translating ? "กำลังแปล..." : translations[tLang] ? "🌐 แปลใหม่" : "🌐 แปลบทนี้"}
+            </button>
+          </div>
+          {view !== "en" && (
+            <small className="muted">คำแปลไว้อ่านทำความเข้าใจ — ถ้าแก้บทภาษาอังกฤษ ให้กด “แปลใหม่” เพื่ออัปเดต</small>
+          )}
         </div>
       </div>
 
@@ -388,6 +554,27 @@ export default function Home() {
           <div className="actions">
             <button className="ghost" onClick={() => navigator.clipboard.writeText(meta.tags.join(", "))}>📋 คัดลอก tags</button>
           </div>
+
+          {meta.equipment?.length > 0 && (
+            <>
+              <label>🧴 อุปกรณ์ที่ควรเตรียม</label>
+              <div className="sfx">
+                {meta.equipment.map((q) => (
+                  <div key={q.item} className="sfx-item">
+                    <b>{q.item}</b>
+                    <span>ใช้ทำอะไร: {q.why}</span>
+                    <span>ใช้ตอน: {q.when}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="actions">
+                <button className="ghost"
+                  onClick={() => navigator.clipboard.writeText(meta.equipment.map((q) => `- ${q.item}: ${q.why}`).join("\n"))}>
+                  📋 คัดลอกรายการอุปกรณ์
+                </button>
+              </div>
+            </>
+          )}
 
           <label>Sound effects / เพลงที่แนะนำ</label>
           <div className="sfx">

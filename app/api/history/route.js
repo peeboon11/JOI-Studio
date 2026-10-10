@@ -50,13 +50,16 @@ export async function POST(req) {
   return Response.json(summary(entry));
 }
 
-// PATCH {id, out} → update the script text after edits
+// PATCH {id, out?, translation?: {lang, text}} → update script text / add a translation
 export async function PATCH(req) {
   if (!redis) return notConfigured();
-  const { id, out } = await req.json();
+  const { id, out, translation } = await req.json();
   const entry = await redis.get(key(id));
   if (!entry) return Response.json({ error: "ไม่พบบทนี้" }, { status: 404 });
-  await redis.set(key(id), { ...entry, out });
+  const next = { ...entry };
+  if (out !== undefined) next.out = out;
+  if (translation) next.translations = { ...entry.translations, [translation.lang]: translation.text };
+  await redis.set(key(id), next);
   return Response.json({ ok: true });
 }
 
