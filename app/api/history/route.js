@@ -19,19 +19,25 @@ const summary = (e) => ({
   words: e.out ? e.out.split(/\s+/).length : 0,
 });
 
-// GET            → list of summaries (newest first)
-// GET ?id=<id>   → full entry
+// GET ?page=1&size=10 → { items: summaries (newest first), total, page, size }
+// GET ?id=<id>        → full entry
 export async function GET(req) {
   if (!redis) return notConfigured();
-  const id = new URL(req.url).searchParams.get("id");
+  const params = new URL(req.url).searchParams;
+  const id = params.get("id");
   if (id) {
     const entry = await redis.get(key(id));
     return entry ? Response.json(entry) : Response.json({ error: "ไม่พบบทนี้" }, { status: 404 });
   }
-  const ids = await redis.zrange(INDEX, 0, -1, { rev: true });
-  if (!ids.length) return Response.json([]);
-  const entries = await redis.mget(...ids.map(key));
-  return Response.json(entries.filter(Boolean).map(summary));
+  const size = Math.min(Math.max(parseInt(params.get("size")) || 10, 1), 50);
+  const page = Math.max(parseInt(params.get("page")) || 1, 1);
+  const start = (page - 1) * size;
+  const [total, ids] = await Promise.all([
+    redis.zcard(INDEX),
+    redis.zrange(INDEX, start, start + size - 1, { rev: true }),
+  ]);
+  const entries = ids.length ? await redis.mget(...ids.map(key)) : [];
+  return Response.json({ items: entries.filter(Boolean).map(summary), total, page, size });
 }
 
 // POST {entry} → create or replace
@@ -54,11 +60,23 @@ export async function PATCH(req) {
   return Response.json({ ok: true });
 }
 
-// DELETE ?id=<id>
+// DELETE ?id=<id>        → one entry
+// DELETE {ids: [...]}    → several entries
+// DELETE ?all=1          → everything
 export async function DELETE(req) {
   if (!redis) return notConfigured();
-  const id = new URL(req.url).searchParams.get("id");
-  await redis.del(key(id));
-  await redis.zrem(INDEX, id);
-  return Response.json({ ok: true });
+  const params = new URL(req.url).searchParams;
+  let ids;
+  if (params.get("all") === "1") {
+    ids = await redis.zrange(INDEX, 0, -1);
+  } else if (params.get("id")) {
+    ids = [params.get("id")];
+  } else {
+    ids = (await req.json().catch(() => ({}))).ids ?? [];
+  }
+  if (ids.length) {
+    await redis.del(...ids.map(key));
+    await redis.zrem(INDEX, ...ids);
+  }
+  return Response.json({ ok: true, deleted: ids.length });
 }

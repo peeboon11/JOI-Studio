@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { LENGTHS, historyApi as api } from "@/lib/shared";
 
 const STYLES = [
   "Girlfriend experience (GFE)", "Femdom / dominant", "Gentle & sensual", "Teasing / denial",
@@ -29,14 +31,6 @@ const SFX_SITES = [
 ];
 const TONES = ["Seductive", "Sweet & caring", "Bossy / strict", "Playful", "Mysterious", "Encouraging"];
 // words ≈ spoken minutes × ~120 wpm (JOI has pauses and countdowns)
-const LENGTHS = [
-  { label: "สั้น ~1 นาที", value: "short (~1 minute spoken)", words: 120 },
-  { label: "กลาง ~2-3 นาที", value: "medium (~2-3 minutes spoken)", words: 300 },
-  { label: "ยาว ~5 นาที", value: "long (~5 minutes spoken)", words: 600 },
-  { label: "ยาวมาก ~10 นาที", value: "very long (~10 minutes spoken)", words: 1200 },
-  { label: "30 นาที", value: "30 minutes spoken", words: 3600 },
-  { label: "1 ชั่วโมง", value: "60 minutes spoken", words: 7200 },
-];
 const BILLING_URL = "https://console.anthropic.com/settings/billing";
 const USAGE_URL = "https://console.anthropic.com/usage";
 
@@ -96,40 +90,11 @@ export default function Home() {
   useEffect(() => setCredit(loadCredit()), []);
 
   // ---- draft autosave (this browser) + history (cloud, shared across devices) ----
-  const [history, setHistory] = useState([]);
   const [currentId, setCurrentId] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [storageWarn, setStorageWarn] = useState("");
   const [cloudErr, setCloudErr] = useState("");
-  const [syncing, setSyncing] = useState(false);
   const [savedOut, setSavedOut] = useState(""); // last script text known to be in the cloud
-
-  async function api(method, body, query = "") {
-    const r = await fetch(`/api/history${query}`, {
-      method,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (r.status === 401) {
-      window.location.href = "/login";
-      throw new Error("กรุณาเข้าสู่ระบบใหม่");
-    }
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error);
-    return data;
-  }
-
-  async function refreshHistory() {
-    setSyncing(true);
-    try {
-      setHistory(await api("GET"));
-      setCloudErr("");
-    } catch (e) {
-      setCloudErr(e.message);
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   useEffect(() => {
     const d = loadJSON("draft", null);
@@ -153,7 +118,12 @@ export default function Home() {
           setCloudErr("ย้ายประวัติเก่าขึ้นคลาวด์ไม่สำเร็จ: " + e.message);
         }
       }
-      refreshHistory();
+      // opened from the history page: /?open=<id>
+      const openId = new URLSearchParams(window.location.search).get("open");
+      if (openId) {
+        await openHistory(openId);
+        window.history.replaceState(null, "", "/");
+      }
     })();
   }, []);
 
@@ -198,8 +168,7 @@ export default function Home() {
     setCurrentId(entry.id);
     setSavedOut(entry.out);
     try {
-      const s = await api("POST", entry);
-      setHistory((h) => [s, ...h]);
+      await api("POST", entry);
       setCloudErr("");
     } catch (e) {
       setCloudErr("บันทึกขึ้นคลาวด์ไม่สำเร็จ (บทยังอยู่ในหน้านี้ — ดาวน์โหลดเก็บไว้ก่อน): " + e.message);
@@ -215,16 +184,6 @@ export default function Home() {
       setCurrentId(entry.id);
       setErr("");
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e) {
-      setCloudErr(e.message);
-    }
-  }
-  async function deleteHistory(id) {
-    if (!confirm("ลบบทนี้ออกจากประวัติ? (ลบจากทุกเครื่อง)")) return;
-    try {
-      await api("DELETE", null, `?id=${encodeURIComponent(id)}`);
-      setHistory((h) => h.filter((x) => x.id !== id));
-      if (currentId === id) setCurrentId(null);
     } catch (e) {
       setCloudErr(e.message);
     }
@@ -320,7 +279,13 @@ export default function Home() {
 
   return (
     <div className="wrap">
-      <h1>JOI Script Studio</h1>
+      <div className="topbar">
+        <h1>JOI Script Studio</h1>
+        <nav>
+          <Link href="/" className="active">✍️ สร้างบท</Link>
+          <Link href="/history">📚 ประวัติ</Link>
+        </nav>
+      </div>
       <p className="sub">พิมพ์ไอเดียหรือบทร่างภาษาอะไรก็ได้ → ได้บทภาษาอังกฤษตามแนวที่เลือก (สำหรับผู้ใหญ่ 18+)</p>
       <div className="grid">
         <div className="card">
@@ -444,35 +409,7 @@ export default function Home() {
         </div>
       )}
 
-      <div className="card history">
-        <div className="history-head">
-          <label>☁️ บทที่เคยสร้าง ({history.length}) · เปิดได้ทุกเครื่อง</label>
-          <button className="ghost" onClick={refreshHistory} disabled={syncing}>{syncing ? "กำลังโหลด..." : "↻ รีเฟรช"}</button>
-        </div>
-        {storageWarn && <div className="err">{storageWarn}</div>}
-        {cloudErr && <div className="err">{cloudErr}</div>}
-        {history.length === 0 ? (
-          <div className="muted">ยังไม่มีบท — สร้างบทแล้วจะถูกเก็บไว้ที่นี่ เปิดจากเครื่องไหนก็เห็น</div>
-        ) : (
-          <ul className="history-list">
-            {history.map((h) => (
-              <li key={h.id} className={h.id === currentId ? "current" : ""}>
-                <div className="history-info">
-                  <b>{h.title || "(ไม่มีชื่อ)"}</b>
-                  <small>
-                    {new Date(h.at).toLocaleString("th-TH")} ·{" "}
-                    {LENGTHS.find((l) => l.value === h.length)?.label ?? ""} · {(h.words ?? 0).toLocaleString()} คำ
-                  </small>
-                </div>
-                <div className="history-actions">
-                  <button className="ghost" onClick={() => openHistory(h.id)}>เปิด</button>
-                  <button className="ghost" onClick={() => deleteHistory(h.id)}>ลบ</button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {(storageWarn || cloudErr) && <div className="err">{storageWarn || cloudErr}</div>}
 
       <footer className="credit-bar">
         <span>
