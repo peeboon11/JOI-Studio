@@ -394,6 +394,95 @@ export default function Home() {
     a.click();
   }
 
+  // ---- AI-timed subtitles (.srt) for DaVinci Resolve, from the tab currently shown ----
+  const [captioning, setCaptioning] = useState(false);
+  const [capProg, setCapProg] = useState(null); // { start, now, chars, expected }
+  useEffect(() => {
+    if (!capProg) return;
+    const id = setInterval(() => setCapProg((p) => p && { ...p, now: Date.now() }), 500);
+    return () => clearInterval(id);
+  }, [!!capProg]);
+
+  async function makeSubtitles() {
+    setCaptioning(true);
+    setErr("");
+    // output ≈ the script text + ~45 chars of JSON per ~35-char caption
+    setCapProg({ start: Date.now(), now: Date.now(), chars: 0, expected: shown.length * 2.3 + 200 });
+    try {
+      const r = await fetch("/api/captions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: shown }),
+      });
+      if (r.status === 401) return (window.location.href = "/login");
+      if (!r.ok) throw new Error((await r.json()).error);
+
+      let data = null;
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const ev = JSON.parse(line);
+          if (ev.type === "progress") setCapProg((p) => p && { ...p, chars: ev.chars, now: Date.now() });
+          else if (ev.type === "error") throw new Error(ev.error);
+          else if (ev.type === "done") data = ev;
+        }
+      }
+      if (!data) throw new Error("การเชื่อมต่อถูกตัดก่อนเสร็จ");
+      setLastUsage(data.usage);
+      addSpend(data.usage.cost);
+
+      const ts = (s) => {
+        const ms = Math.round(s * 1000);
+        const p = (n, w = 2) => String(n).padStart(w, "0");
+        return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+      };
+      // spoken-style captions: no em/en dashes, no trailing periods/ellipses (keep ? and !)
+      const clean = (s) =>
+        s.split("\n")
+          .map((l) => l.replace(/\s*[—–]+\s*/g, " ").replace(/(\.|…)+$/, "").replace(/\s{2,}/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      let t = 0;
+      const srt = data.captions
+        .map((c) => ({ ...c, text: clean(c.text) }))
+        .filter((c) => c.text)
+        .map((c, i) => {
+          const start = t;
+          const end = start + Math.max(0.8, c.duration);
+          t = end + Math.max(0, c.pause_after);
+          return `${i + 1}\n${ts(start)} --> ${ts(end)}\n${c.text}\n`;
+        })
+        .join("\n");
+
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob(["﻿" + srt], { type: "application/x-subrip" }));
+      a.download = view === "en" ? "joi-subtitles.srt" : `joi-subtitles-${view}.srt`;
+      a.click();
+      alertDone(true, "สร้างซับเสร็จแล้ว 🎬", `${data.captions.length} ท่อน · ยาว ~${Math.round(t / 60)} นาที`);
+    } catch (e) {
+      setErr("สร้างซับไม่สำเร็จ: " + e.message);
+      alertDone(false, "สร้างซับไม่สำเร็จ", e.message);
+    } finally {
+      setCaptioning(false);
+      setCapProg(null);
+    }
+  }
+  let capPct = 0, capElapsed = 0, capEta = 0;
+  if (capProg) {
+    capElapsed = (capProg.now - capProg.start) / 1000;
+    const frac = Math.min(capProg.chars / capProg.expected, 0.99);
+    capPct = capProg.chars === 0 ? Math.min(5, capElapsed / 2) : 5 + frac * 94;
+    capEta = frac > 0.02 ? (capElapsed / frac) * (1 - frac) : 0;
+  }
+
   return (
     <div className="wrap">
       <div className="topbar">
@@ -520,7 +609,24 @@ export default function Home() {
             <button className="ghost" disabled={!shown}
               onClick={() => navigator.clipboard.writeText(shown)}>📋 คัดลอก</button>
             <button className="ghost" onClick={download} disabled={!shown}>⬇ ดาวน์โหลด .txt</button>
+            <button className="ghost" onClick={makeSubtitles} disabled={!shown || captioning || loading || translating}
+              title="ให้ AI ตัดบทเป็นท่อนพร้อมเวลา แล้วโหลดเป็น .srt สำหรับ DaVinci Resolve">
+              {captioning ? "กำลังทำซับ..." : "🎬 สร้างซับ .srt (DaVinci)"}
+            </button>
           </div>
+          {capProg && (
+            <div className="progress">
+              <div className="progress-head">
+                <span>{capProg.chars === 0 ? "กำลังอ่านบท..." : "กำลังตัดซับและจับเวลา..."}</span>
+                <b>{Math.floor(capPct)}%</b>
+              </div>
+              <div className="bar"><div className="fill" style={{ width: `${capPct}%` }} /></div>
+              <div className="progress-foot">
+                <span>ผ่านไป {fmtTime(capElapsed)}</span>
+                <span>{capEta ? `เหลืออีกประมาณ ${fmtTime(capEta)}` : "กำลังประเมินเวลา..."}</span>
+              </div>
+            </div>
+          )}
           <div className="translate-bar">
             <select value={tLang} onChange={(e) => setTLang(e.target.value)} disabled={translating}>
               {TRANSLATE_LANGS.map((l) => <option key={l}>{l}</option>)}
