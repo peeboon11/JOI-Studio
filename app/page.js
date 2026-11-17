@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { LENGTHS, historyApi as api, playChime, notify } from "@/lib/shared";
+import { layoutCaptions, totalSeconds, toSrt, toFcpxml } from "@/lib/subtitleExport";
 
 const STYLES = [
   "Girlfriend experience (GFE)", "Femdom / dominant", "Gentle & sensual", "Teasing / denial",
@@ -202,6 +203,7 @@ export default function Home() {
       setMeta(entry.meta);
       setCurrentId(entry.id);
       setTranslations(entry.translations ?? {});
+      setSubs(null);
       setView("en");
       setErr("");
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -268,6 +270,7 @@ export default function Home() {
   // start a fresh script but keep the current settings; the old one stays in history
   function newScript() {
     setOut("");
+    setSubs(null);
     setSavedOut("");
     setMeta(null);
     setCurrentId(null);
@@ -396,6 +399,16 @@ export default function Home() {
 
   // ---- AI-timed subtitles (.srt) for DaVinci Resolve, from the tab currently shown ----
   const [captioning, setCaptioning] = useState(false);
+  const [subs, setSubs] = useState(null); // { clips, lang } — last generated subtitles, re-downloadable for free
+  function saveSubs(sub, kind) {
+    const suffix = sub.lang === "en" ? "" : `-${sub.lang.split(" ")[0]}`;
+    const isXml = kind === "fcpxml";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([isXml ? toFcpxml(sub.clips, meta?.title || "JOI Subtitles") : "﻿" + toSrt(sub.clips)],
+      { type: isXml ? "application/xml" : "application/x-subrip" }));
+    a.download = `joi-subtitles${suffix}.${kind}`;
+    a.click();
+  }
   const [capProg, setCapProg] = useState(null); // { start, now, chars, expected }
   useEffect(() => {
     if (!capProg) return;
@@ -406,8 +419,8 @@ export default function Home() {
   async function makeSubtitles() {
     setCaptioning(true);
     setErr("");
-    // output ≈ the script text + ~45 chars of JSON per ~35-char caption
-    setCapProg({ start: Date.now(), now: Date.now(), chars: 0, expected: shown.length * 2.3 + 200 });
+    // output ≈ the script text + ~75 chars of JSON per short (~20-char) caption
+    setCapProg({ start: Date.now(), now: Date.now(), chars: 0, expected: shown.length * 4.5 + 200 });
     try {
       const r = await fetch("/api/captions", {
         method: "POST",
@@ -439,34 +452,12 @@ export default function Home() {
       setLastUsage(data.usage);
       addSpend(data.usage.cost);
 
-      const ts = (s) => {
-        const ms = Math.round(s * 1000);
-        const p = (n, w = 2) => String(n).padStart(w, "0");
-        return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
-      };
-      // spoken-style captions: no em/en dashes, no trailing periods/ellipses (keep ? and !)
-      const clean = (s) =>
-        s.split("\n")
-          .map((l) => l.replace(/\s*[—–]+\s*/g, " ").replace(/(\.|…)+$/, "").replace(/\s{2,}/g, " ").trim())
-          .filter(Boolean)
-          .join("\n");
-      let t = 0;
-      const srt = data.captions
-        .map((c) => ({ ...c, text: clean(c.text) }))
-        .filter((c) => c.text)
-        .map((c, i) => {
-          const start = t;
-          const end = start + Math.max(0.8, c.duration);
-          t = end + Math.max(0, c.pause_after);
-          return `${i + 1}\n${ts(start)} --> ${ts(end)}\n${c.text}\n`;
-        })
-        .join("\n");
-
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob(["﻿" + srt], { type: "application/x-subrip" }));
-      a.download = view === "en" ? "joi-subtitles.srt" : `joi-subtitles-${view}.srt`;
-      a.click();
-      alertDone(true, "สร้างซับเสร็จแล้ว 🎬", `${data.captions.length} ท่อน · ยาว ~${Math.round(t / 60)} นาที`);
+      const clips = layoutCaptions(data.captions);
+      const sub = { clips, lang: view };
+      setSubs(sub);
+      saveSubs(sub, "fcpxml");
+      const cues = clips.filter((c) => c.track === "cue").length;
+      alertDone(true, "สร้างซับเสร็จแล้ว 🎬", `${clips.length - cues} ซับ + ${cues} คำสั่ง · ยาว ~${Math.round(totalSeconds(clips) / 60)} นาที`);
     } catch (e) {
       setErr("สร้างซับไม่สำเร็จ: " + e.message);
       alertDone(false, "สร้างซับไม่สำเร็จ", e.message);
@@ -610,9 +601,13 @@ export default function Home() {
               onClick={() => navigator.clipboard.writeText(shown)}>📋 คัดลอก</button>
             <button className="ghost" onClick={download} disabled={!shown}>⬇ ดาวน์โหลด .txt</button>
             <button className="ghost" onClick={makeSubtitles} disabled={!shown || captioning || loading || translating}
-              title="ให้ AI ตัดบทเป็นท่อนพร้อมเวลา แล้วโหลดเป็น .srt สำหรับ DaVinci Resolve">
-              {captioning ? "กำลังทำซับ..." : "🎬 สร้างซับ .srt (DaVinci)"}
+              title="ให้ AI ตัดบทเป็นซับตามจังหวะของคุณ แล้วโหลดเป็น FCPXML (คลิป Text) สำหรับ DaVinci Resolve">
+              {captioning ? "กำลังทำซับ..." : subs ? "🎬 ทำซับใหม่" : "🎬 สร้างซับ (DaVinci)"}
             </button>
+            {subs && !captioning && <>
+              <button className="ghost" onClick={() => saveSubs(subs, "fcpxml")} title="File → Import → Timeline ใน DaVinci">⬇ .fcpxml</button>
+              <button className="ghost" onClick={() => saveSubs(subs, "srt")} title="เฉพาะซับหลัก ไม่มีคำสั่งแทร็กบน">⬇ .srt</button>
+            </>}
           </div>
           {capProg && (
             <div className="progress">

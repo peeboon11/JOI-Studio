@@ -1,20 +1,30 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { usageCost } from "@/lib/pricing";
+import { STYLE_EXAMPLES } from "@/lib/subtitleStyle";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const client = new Anthropic(); // reads ANTHROPIC_API_KEY
 
-const SYSTEM = `You turn adult JOI (jerk-off instruction) video scripts, written for consenting adults, into a timed subtitle track for video editing.
-Split the SPOKEN lines into short on-screen captions, in the original order and the original language, without rewriting, softening or censoring the wording.
-Rules:
-- Each caption: 1-2 short lines, max ~42 characters per line (join two lines with "\\n"); split long sentences at natural pauses.
-- Do not put [stage directions], [ACTION: ...], [PREP: ...], section labels or notes into caption text — but use them for timing: give that caption a "pause_after" in seconds for pauses, holds, edging stops, and so on.
-- Countdowns and stroke counts: ALWAYS write the numbers as digits ("10", "9", "8" — never "ten", "nine", "eight"), converting spelled-out numbers in any language (e.g. Thai "สิบ" → "10"). One caption per number, e.g. "10", "9", ... "1", each ~1 s (duration ~0.8, pause_after ~0.2) unless the script sets another pace; keep the surrounding words in their own captions.
-- Write captions the way people normally see spoken subtitles: no period at the end of a caption, no ellipsis ("..."), and no em/en dashes ("—", "–") anywhere — split the caption there or use a comma instead. Keep "?" and "!".
-- "duration": how long the caption stays on screen, at a calm, sensual speaking pace (~2.3 words per second for English; similar natural pace for other languages), minimum 0.8 s.
-- "pause_after": silent gap before the next caption (0 when there is none).`;
+const SYSTEM = `You turn adult JOI (jerk-off instruction) video scripts, written for consenting adults, into timed on-screen captions for video editing, matching the creator's own hand-made caption style.
+Keep the original order and language; don't soften or censor. You may trim filler words so captions stay short, but keep the voice.
+
+Two tracks:
+- "main": the spoken lines, one after another. "duration" = seconds on screen, "pause_after" = silent gap before the next main caption. Set "offset" to 0.
+- "cue": big overlay instructions shown on top of the main captions — speed/action cues taken from [ACTION]/[stage directions] and beat cues, written as 1-3 punchy words (e.g. "Fast", "Slow...", "Slower...", "Hold..", "STOP", "LUBE", "REST", "Rest No touching"), plus an occasional teasing word layered over a line (e.g. "usually", "haha.."). "offset" = seconds after the start of the previous main caption that the cue appears (it does not push the main captions later). A rest/no-touching cue stays up for the whole rest (e.g. 30-75 s) while main captions keep going underneath. Set "pause_after" to 0.
+Never put [brackets], [PREP]/[ACTION] labels, section headings or notes into caption text.
+
+The creator's pacing (measured from their real 47-minute video) — follow it closely:
+- Very short captions: usually 1-4 words, rarely more than 7; split sentences into phrases. Max ~60 characters.
+- Slow and lingering: 1-2 word captions stay ~2-3 s (opening/teasing lines up to 4-7 s), 3-4 words ~4 s, 5-7 words ~4-5.5 s, longer ~6-8 s.
+- Gaps between main captions are typically 0.5-2 s; ~2-3 s after a punchline or the end of a beat; 5-7 s between the spoken numbers of big countdowns (30, 25, 20, 15).
+- Countdowns: always digits ("10", "9" — never words). One caption per number. Fast countdown: ~2 s each with ~0.5-1 s gaps. Edging/teasing countdown: ~2.6 s each with 3-6 s gaps, and she may restart or repeat numbers ("10", "9", "10", "10", "8"). Slow countdown: ~3.7 s each with ~1 s gaps. Big counts can carry words: "30 Fast. Go!!", "25... keep that pace...".
+- Repeat a line for emphasis when it fits ("Don't look at me like that" twice).
+- Punctuation like spoken teasing: ".." or "..." for drawn-out/teasing words ("Hehe..", "I don't bite...", "Hold.."), "." for blunt beats ("Come. Now.", "I'll know. I always know"), "!!" for excitement, "?" for questions. Never use em/en dashes.
+
+Examples from the creator's own video (one JSON object per caption, in order):
+${STYLE_EXAMPLES.map((e) => JSON.stringify({ offset: 0, pause_after: 0, ...e })).join("\n")}`;
 
 const SCHEMA = {
   type: "object",
@@ -26,11 +36,13 @@ const SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["text", "duration", "pause_after"],
+        required: ["text", "track", "duration", "pause_after", "offset"],
         properties: {
           text: { type: "string" },
+          track: { type: "string", enum: ["main", "cue"] },
           duration: { type: "number" },
           pause_after: { type: "number" },
+          offset: { type: "number" },
         },
       },
     },
